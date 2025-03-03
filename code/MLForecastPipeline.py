@@ -20,7 +20,7 @@ def determine_max_lags(train_df, min_lags=10, max_fraction=0.5, max_limit=400):
     max_lags = min(int(len(train_df) * max_fraction), max_limit)
     return max(max_lags, min_lags)  # Ensure at least min_lags
 
-def determine_dynamic_max_lags(train_df, min_lags=20, max_fraction=0.5, max_limit=400):
+def determine_dynamic_max_lags(train_df, min_lags=15, max_fraction=0.5, max_limit=400):
     """
     Dynamically determines a range of max_lags values based on train size.
     Returns a list of `max_lags` values to be tested.
@@ -254,7 +254,17 @@ def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms
                     fit_num += 1
     return pd.DataFrame(results)
 
-def evaluate_models_generator(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month']):
+import csv
+def save_results_generator(results_generator, test_lengths, filename="forecast_results.csv"):
+    """ Saves results from a generator directly to a CSV file """
+    with open(filename, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["Model", "Transforms", "Lags", "Lag Transforms", "Lag Name"] +
+                                            [f"test_{t}_days" for t in test_lengths])
+        writer.writeheader()
+        for row in results_generator:
+            writer.writerow(row)
+
+def evaluate_models_generator(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, test_lengths, date_features=['dayofweek', 'month']):
     """
     Evaluates multiple models with different transformations, lag selections, and lag transformations.
     Now accepts precomputed `optimal_lags_list` instead of calculating inside.
@@ -267,10 +277,10 @@ def evaluate_models_generator(train_df, test_df, models, target_transforms, lag_
     max_test_length = len(test_df)  # Full test period
 
     # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
-    test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
+    # test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
 
     # Filter lengths within available test period
-    test_lengths = [t for t in test_lengths if t <= max_test_length]
+    # test_lengths = [t for t in test_lengths if t <= max_test_length]
 
     total_fits = len(models) * len(valid_transform_combinations) * len(optimal_lags_list) * len(lag_transforms_options)
     print(f"Total model fits to run: {total_fits}")
@@ -305,8 +315,6 @@ def evaluate_models_generator(train_df, test_df, models, target_transforms, lag_
 
                         for test_length in test_lengths:
                             eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
-                            # print('eval_subset', eval_subset.shape, eval_subset)
-                            # raise KeyError('pashol na')
                             # Store error in the dictionary
                             error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
 
