@@ -1,6 +1,19 @@
 from sklearn.ensemble import RandomForestRegressor
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+from mlforecast import MLForecast
+from mlforecast.target_transforms import (
+    Differences, AutoDifferences, AutoSeasonalDifferences, AutoSeasonalityAndDifferences,
+    LocalStandardScaler, LocalMinMaxScaler, LocalBoxCox
+)
+from window_ops.expanding import expanding_mean
+from window_ops.rolling import rolling_mean
+from sklearn.ensemble import RandomForestRegressor
+from xgboost import XGBRegressor
+from sklearn.linear_model import Ridge, Lasso, SGDRegressor
+from itertools import combinations, chain
+import pickle
 
 def determine_max_lags(train_df, min_lags=10, max_fraction=0.5, max_limit=400):
     """ Determines the maximum number of lags based on train set size. """
@@ -42,6 +55,37 @@ def generate_lagged_features(train_df, target_col, max_lags):
     lagged_features = lagged_features.dropna().reset_index(drop=True)
     
     return lagged_features
+
+
+from numba import jit, prange
+import numpy as np
+
+@jit(nopython=True, parallel=True)
+def fast_shift(arr, lags):
+    """ Efficiently computes lagged features using Numba. """
+    n = arr.shape[0]
+    result = np.full((n, len(lags)), np.nan)  # Initialize with NaN
+    
+    for i in prange(len(lags)):  # Parallel loop
+        lag = lags[i]
+        if lag < n:
+            result[lag:, i] = arr[:-lag]  # Shift manually
+
+    return result
+
+def generate_lagged_features(train_df, target_col, max_lags):
+    """ Uses Numba for lag feature computation. """
+    # start_time = time.perf_counter()
+    
+    lags = np.arange(1, max_lags + 1)
+    lagged_data = fast_shift(train_df[target_col].values, lags)
+
+    lagged_df = pd.DataFrame(lagged_data, columns=[f'lag_{lag}' for lag in lags])
+    
+    # end_time = time.perf_counter()
+    # print(f"Numba lag feature generation time: {end_time - start_time:.2f} seconds")
+
+    return lagged_df
 
 
 def select_important_lags(train_df, target_col, max_lags, model=RandomForestRegressor(), num_of_lags=10):
@@ -93,22 +137,6 @@ def get_optimal_lags(train_df, target_col, model=RandomForestRegressor(), ratios
 
     return results
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-from mlforecast import MLForecast
-from mlforecast.target_transforms import (
-    Differences, AutoDifferences, AutoSeasonalDifferences, AutoSeasonalityAndDifferences,
-    LocalStandardScaler, LocalMinMaxScaler, LocalBoxCox
-)
-from window_ops.expanding import expanding_mean
-from window_ops.rolling import rolling_mean
-from sklearn.ensemble import RandomForestRegressor
-from xgboost import XGBRegressor
-from sklearn.linear_model import Ridge, Lasso, SGDRegressor
-from itertools import combinations, chain
-import pickle
-
 def mape_met(y_true, y_pred):
     return np.mean(np.abs((y_true - y_pred) / (y_true + 1e-9))) * 100
 
@@ -145,22 +173,30 @@ def filter_conflicting_transforms(transform_combination):
         return False
     return True
 
+def return_sgdreg_name(model_name):
+    if "SGDRegressor" in model_name:
+        return "SGDRegressor"
+    return model_name
+
 # Model Evaluation Pipeline
 def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month']):
     """
     Evaluates multiple models with different transformations, lag selections, and lag transformations.
     Now accepts precomputed `optimal_lags_list` instead of calculating inside.
     """
-    best_model = None
-    best_error = float('inf')
-    best_transforms = None
-    best_lags = None
-    best_lag_transforms = None
-    results = {}
+    results = []
 
     # Validate transform combinations
-    valid_transform_combinations = list(chain(combinations(target_transforms, 1), combinations(target_transforms, 2)))
+    valid_transform_combinations = [()] + list(chain(combinations(target_transforms, 1), combinations(target_transforms, 2)))
     valid_transform_combinations = [tc for tc in valid_transform_combinations if filter_conflicting_transforms(tc)]
+
+    max_test_length = len(test_df)  # Full test period
+
+    # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
+    test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
+
+    # Filter lengths within available test period
+    test_lengths = [t for t in test_lengths if t <= max_test_length]
 
     total_fits = len(models) * len(valid_transform_combinations) * len(optimal_lags_list) * len(lag_transforms_options)
     print(f"Total model fits to run: {total_fits}")
@@ -187,32 +223,110 @@ def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms
                         fcst.fit(train_df)
                         
                         # Predict
-                        predictions = fcst.predict(h=len(test_df['y']))
-                        
+                        predictions = fcst.predict(h=max_test_length)
+                        test_df_copy = test_df.copy()
+                        test_df_copy['forecast'] = predictions[model_name].values       
+
+                        error_dict = {}
+
+                        for test_length in test_lengths:
+                            eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
+                            # print('eval_subset', eval_subset.shape, eval_subset)
+                            # raise KeyError('pashol na')
+                            # Store error in the dictionary
+                            error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
+
                         # Store results
                         # Merge predictions back to maintain the `ds` column
-                        # test_df = test_df.copy()
-                        # test_df = test_df.iloc[:len(predictions)].copy()  # Ensure same length
-                        # test_df['forecast'] = predictions[model_name]
-                        # error = np.mean(np.abs((test_df['y'].values - test_df['forecast'].values) / test_df['y'].values)) * 100
-                        error = mape_met(test_df['y'].values, predictions[model_name])
-                        # print(stringify_transform(list(transform_combination)))
-                        results[(model_name, stringify_transform(list(transform_combination)), tuple(optimal_lags), clean_lag_transforms(lag_transforms), lag_name)] = error
-                        # print(f"{model_name} MAPE: {error:.2f}% with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}")
+                        results.append({
+                            "Model": model_name,
+                            "Transforms": str(transform_combination),
+                            "Lags": optimal_lags,
+                            "Lag Transforms": str(lag_transforms),
+                            "Lag Name": lag_name,
+                            **error_dict  # Expand error dictionary into separate columns
+                        })
+                        print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}% with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}")
                         
-                        if error < best_error:
-                            best_error = error
-                            best_model = model_name
-                            best_transforms = transform_combination
-                            best_lags = optimal_lags
-                            best_lag_transforms = lag_transforms
-                    
                     except Exception as e:
-                        print(f"Skipping combination due to error: {e}")
+                        print(f"Skipping combination {fit_num} due to error: {e}")
+
                     fit_num += 1
-    
-    print(f"Best Model: {best_model} with MAPE {best_error:.2f}% using transforms {best_transforms}, lags {best_lags}, and lag_transforms {best_lag_transforms}")
-    return results
+    return pd.DataFrame(results)
+
+def evaluate_models_generator(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month']):
+    """
+    Evaluates multiple models with different transformations, lag selections, and lag transformations.
+    Now accepts precomputed `optimal_lags_list` instead of calculating inside.
+    """
+
+    # Validate transform combinations
+    valid_transform_combinations = [()] + list(chain(combinations(target_transforms, 1), combinations(target_transforms, 2)))
+    valid_transform_combinations = [tc for tc in valid_transform_combinations if filter_conflicting_transforms(tc)]
+
+    max_test_length = len(test_df)  # Full test period
+
+    # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
+    test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
+
+    # Filter lengths within available test period
+    test_lengths = [t for t in test_lengths if t <= max_test_length]
+
+    total_fits = len(models) * len(valid_transform_combinations) * len(optimal_lags_list) * len(lag_transforms_options)
+    print(f"Total model fits to run: {total_fits}")
+
+    fit_num = 0
+    for lag_name, optimal_lags in optimal_lags_list.items():  # Now uses precomputed lags
+        for transform_combination in valid_transform_combinations:
+            for lag_transforms in lag_transforms_options:
+                for model_name, model in models.items():
+                    print(f"{fit_num}/{total_fits} Training {model_name} with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}...")
+
+                    try:
+                        fcst = MLForecast(
+                            models=[model],
+                            freq='D',
+                            lags=optimal_lags,
+                            target_transforms=list(transform_combination),
+                            date_features=date_features,
+                            num_threads=1,
+                            lag_transforms=lag_transforms,
+                        )
+                        
+                        # Fit the model
+                        fcst.fit(train_df)
+                        
+                        # Predict
+                        predictions = fcst.predict(h=max_test_length)
+                        test_df_copy = test_df.copy()
+                        test_df_copy['forecast'] = predictions[model_name].values       
+
+                        error_dict = {}
+
+                        for test_length in test_lengths:
+                            eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
+                            # print('eval_subset', eval_subset.shape, eval_subset)
+                            # raise KeyError('pashol na')
+                            # Store error in the dictionary
+                            error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
+
+                        # Store results
+                        # Merge predictions back to maintain the `ds` column
+                        yield {
+                            "Model": model_name,
+                            "Transforms": str(transform_combination),
+                            "Lags": optimal_lags,
+                            "Lag Transforms": str(lag_transforms),
+                            "Lag Name": lag_name,
+                            **error_dict  # Expand error dictionary into separate columns
+                        }
+                        print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}% with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}")
+                        
+                    except Exception as e:
+                        print(f"Skipping combination {fit_num} due to error: {e}")
+
+                    fit_num += 1
+    # return pd.DataFrame(results)
 
 import json
 import re
@@ -314,21 +428,26 @@ def clean_lag_transforms(lag_transforms):
     return "|".join(transform_names)  # Join using "|" for readability
 
 
+# def save_results(results, filename="forecast_results.json"):
+#     """Serializes model results into JSON format for easy reloading."""
+#     serializable_results = {
+#         json.dumps({
+#             "Model": model,
+#             "Transforms": transforms,
+#             "Lags": list(lags),
+#             "Lag Transforms": lag_transforms,
+#             "Lag Name": lag_name
+#         }): mape
+#         for (model, transforms, lags, lag_transforms, lag_name), mape in results.items()
+#     }
+    
+#     with open(filename, "w") as f:
+#         json.dump(serializable_results, f, indent=4)
+#     print(f"Results saved to {filename}")
+
 def save_results(results, filename="forecast_results.json"):
     """Serializes model results into JSON format for easy reloading."""
-    serializable_results = {
-        json.dumps({
-            "Model": model,
-            "Transforms": transforms,
-            "Lags": list(lags),
-            "Lag Transforms": lag_transforms,
-            "Lag Name": lag_name
-        }): mape
-        for (model, transforms, lags, lag_transforms, lag_name), mape in results.items()
-    }
-    
-    with open(filename, "w") as f:
-        json.dump(serializable_results, f, indent=4)
+    results.to_csv(filename, index=False)
     print(f"Results saved to {filename}")
 
 def load_results(filename="forecast_results.json"):
