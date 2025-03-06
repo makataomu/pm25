@@ -147,6 +147,46 @@ def return_sgdreg_name(model_name):
         return "SGDRegressor"
     return model_name
 
+def stringify_transform(transforms):
+    """
+    Convert transformation(s) into a standardized string format including parameters.
+    
+    - Handles both **single** transformations and **lists** of transformations.
+    - Extracts parameters **only if `scaler_` exists**, otherwise just takes the class name.
+    """
+    
+    if not isinstance(transforms, list):  # If it's a single transformation, wrap it in a list
+        transforms = [transforms]
+
+    transform_strings = []
+    
+    for transform in transforms:
+        class_name = transform.__class__.__name__  # Get the class name
+        
+        # Check if the transform has a `scaler_` attribute
+        if hasattr(transform, 'scaler_'):
+            actual_transform = transform.scaler_
+            
+            # Extract all attributes dynamically
+            attr_strings = []
+            for attr in dir(actual_transform):
+                if (not attr.startswith("_")) \
+                    and (not callable(getattr(actual_transform, attr, None))) \
+                    and (attr not in ['tails_', 'diffs_']) \
+                :
+                    attr_value = getattr(actual_transform, attr, None)
+                    attr_strings.append(f"{attr}={attr_value}")
+            
+            # Format class name + parameters
+            attr_str = ", ".join(attr_strings) if attr_strings else "NoParams"
+            transform_strings.append(f"{class_name}({attr_str})")
+        
+        else:
+            # If no `scaler_`, just store the class name
+            transform_strings.append(class_name + '()')
+    
+    return " | ".join(transform_strings) 
+
 # Model Evaluation Pipeline
 def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month']):
     """
@@ -209,7 +249,7 @@ def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms
                         # Merge predictions back to maintain the `ds` column
                         results.append({
                             "Model": model_name,
-                            "Transforms": str(transform_combination),
+                            "Transforms": stringify_transform(list(transform_combination)),
                             "Lags": optimal_lags,
                             "Lag Transforms": str(lag_transforms),
                             "Lag Name": lag_name,
@@ -224,130 +264,11 @@ def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms
     return pd.DataFrame(results)
 
 import csv
-def save_results_generator(results_generator, test_lengths, filename="forecast_results.csv"):
-    """ Saves results from a generator directly to a CSV file """
-    with open(filename, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["Model", "Transforms", "Lags", "Lag Transforms", "Lag Name"] +
-                                            [f"test_{t}_days" for t in test_lengths])
-        writer.writeheader()
-        for row in results_generator:
-            writer.writerow(row)
-
-def evaluate_models_generator(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, test_lengths, date_features=['dayofweek', 'month']):
-    """
-    Evaluates multiple models with different transformations, lag selections, and lag transformations.
-    Now accepts precomputed `optimal_lags_list` instead of calculating inside.
-    """
-
-    # Validate transform combinations
-    valid_transform_combinations = [()] + list(chain(combinations(target_transforms, 1), combinations(target_transforms, 2)))
-    valid_transform_combinations = [tc for tc in valid_transform_combinations if filter_conflicting_transforms(tc)]
-
-    max_test_length = len(test_df)  # Full test period
-
-    # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
-    # test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
-
-    # Filter lengths within available test period
-    # test_lengths = [t for t in test_lengths if t <= max_test_length]
-
-    total_fits = len(models) * len(valid_transform_combinations) * len(optimal_lags_list) * len(lag_transforms_options)
-    print(f"Total model fits to run: {total_fits}")
-
-    fit_num = 0
-    for lag_name, optimal_lags in optimal_lags_list.items():  # Now uses precomputed lags
-        for transform_combination in valid_transform_combinations:
-            for lag_transforms in lag_transforms_options:
-                for model_name, model in models.items():
-                    print(f"{fit_num}/{total_fits} Training {model_name} with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}...")
-
-                    try:
-                        fcst = MLForecast(
-                            models=[model],
-                            freq='D',
-                            lags=optimal_lags,
-                            target_transforms=list(transform_combination),
-                            date_features=date_features,
-                            num_threads=1,
-                            lag_transforms=lag_transforms,
-                        )
-                        
-                        # Fit the model
-                        fcst.fit(train_df)
-                        
-                        # Predict
-                        predictions = fcst.predict(h=max_test_length)
-                        test_df_copy = test_df.copy()
-                        test_df_copy['forecast'] = predictions[model_name].values       
-
-                        error_dict = {}
-
-                        for test_length in test_lengths:
-                            eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
-                            # Store error in the dictionary
-                            error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
-
-                        # Store results
-                        # Merge predictions back to maintain the `ds` column
-                        yield {
-                            "Model": model_name,
-                            "Transforms": str(transform_combination),
-                            "Lags": optimal_lags,
-                            "Lag Transforms": str(lag_transforms),
-                            "Lag Name": lag_name,
-                            **error_dict  # Expand error dictionary into separate columns
-                        }
-                        print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}% with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}")
-                        
-                    except Exception as e:
-                        print(f"Skipping combination {fit_num} due to error: {e}")
-
-                    fit_num += 1
-    # return pd.DataFrame(results)
-
 import json
 import re
 import pandas as pd
 
-def stringify_transform(transforms):
-    """
-    Convert transformation(s) into a standardized string format including parameters.
-    
-    - Handles both **single** transformations and **lists** of transformations.
-    - Extracts parameters **only if `scaler_` exists**, otherwise just takes the class name.
-    """
-    
-    if not isinstance(transforms, list):  # If it's a single transformation, wrap it in a list
-        transforms = [transforms]
 
-    transform_strings = []
-    
-    for transform in transforms:
-        class_name = transform.__class__.__name__  # Get the class name
-        
-        # Check if the transform has a `scaler_` attribute
-        if hasattr(transform, 'scaler_'):
-            actual_transform = transform.scaler_
-            
-            # Extract all attributes dynamically
-            attr_strings = []
-            for attr in dir(actual_transform):
-                if (not attr.startswith("_")) \
-                    and (not callable(getattr(actual_transform, attr, None))) \
-                    and (attr not in ['tails_', 'diffs_']) \
-                :
-                    attr_value = getattr(actual_transform, attr, None)
-                    attr_strings.append(f"{attr}={attr_value}")
-            
-            # Format class name + parameters
-            attr_str = ", ".join(attr_strings) if attr_strings else "NoParams"
-            transform_strings.append(f"{class_name}({attr_str})")
-        
-        else:
-            # If no `scaler_`, just store the class name
-            transform_strings.append(class_name + '()')
-    
-    return " | ".join(transform_strings)  # Join multiple transformations with " | "
 
 
 def parse_transform(transform_str):
