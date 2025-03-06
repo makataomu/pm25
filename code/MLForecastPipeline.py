@@ -57,37 +57,6 @@ def generate_lagged_features(train_df, target_col, max_lags):
     return lagged_features
 
 
-from numba import jit, prange
-import numpy as np
-
-@jit(nopython=True, parallel=True)
-def fast_shift(arr, lags):
-    """ Efficiently computes lagged features using Numba. """
-    n = arr.shape[0]
-    result = np.full((n, len(lags)), np.nan)  # Initialize with NaN
-    
-    for i in prange(len(lags)):  # Parallel loop
-        lag = lags[i]
-        if lag < n:
-            result[lag:, i] = arr[:-lag]  # Shift manually
-
-    return result
-
-def generate_lagged_features(train_df, target_col, max_lags):
-    """ Uses Numba for lag feature computation. """
-    # start_time = time.perf_counter()
-    
-    lags = np.arange(1, max_lags + 1)
-    lagged_data = fast_shift(train_df[target_col].values, lags)
-
-    lagged_df = pd.DataFrame(lagged_data, columns=[f'lag_{lag}' for lag in lags])
-    
-    # end_time = time.perf_counter()
-    # print(f"Numba lag feature generation time: {end_time - start_time:.2f} seconds")
-
-    return lagged_df
-
-
 def select_important_lags(train_df, target_col, max_lags, model=RandomForestRegressor(), num_of_lags=10):
     """ Selects the most important lags based on feature importance analysis. """
     lagged_features = generate_lagged_features(train_df, target_col, max_lags)
