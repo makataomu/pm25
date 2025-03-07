@@ -344,7 +344,7 @@ def clean_lag_transforms(lag_transforms):
 #     print(f"Results saved to {filename}")
 
 def save_results(results, filename="forecast_results.json"):
-    """Serializes model results into JSON format for easy reloading."""
+    """Serializes model results into csv format for easy reloading."""
     results.to_csv(filename, index=False)
     print(f"Results saved to {filename}")
 
