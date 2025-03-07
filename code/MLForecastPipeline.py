@@ -15,6 +15,20 @@ from sklearn.linear_model import Ridge, Lasso, SGDRegressor
 from itertools import combinations, chain
 import pickle
 
+def format_df_to_mlforecast(df, date_col, target_col, unique_id='mean'):
+    df = df.rename({
+        date_col: "ds",
+        # target_col: 'y',
+    }, axis=1)
+
+    df['ds'] = pd.to_datetime(df['ds'])
+
+    df['y'] = df[target_col].copy()
+    # df.drop(columns=target_col)
+
+    df['unique_id'] = unique_id
+    return df
+
 def determine_max_lags(train_df, min_lags=10, max_fraction=0.5, max_limit=400):
     """ Determines the maximum number of lags based on train set size. """
     max_lags = min(int(len(train_df) * max_fraction), max_limit)
@@ -261,6 +275,79 @@ def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms
                         print(f"Skipping combination {fit_num} due to error: {e}")
 
                     fit_num += 1
+    return pd.DataFrame(results)
+
+from prophet import Prophet
+def evaluate_models_prophet(train_df, test_df, target_transforms):
+    """
+    Evaluates multiple models with different transformations, lag selections, and lag transformations.
+    Now accepts precomputed `optimal_lags_list` instead of calculating inside.
+    """
+    results = []
+
+    # Validate transform combinations
+    valid_transform_combinations = [()] + list(chain(combinations(target_transforms, 1), combinations(target_transforms, 2)))
+    valid_transform_combinations = [tc for tc in valid_transform_combinations if filter_conflicting_transforms(tc)]
+
+    max_test_length = len(test_df)  # Full test period
+
+    # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
+    test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
+
+    # Filter lengths within available test period
+    test_lengths = [t for t in test_lengths if t <= max_test_length]
+
+    total_fits = len(valid_transform_combinations)
+    print(f"Total model fits to run: {total_fits}")
+
+    fit_num = 0
+
+    train_df = train_df[['ds', 'y']].copy()
+    test_df = test_df[['ds', 'y']].copy()
+
+    for transform_combination in valid_transform_combinations:
+        print(f"{fit_num}/{total_fits} Training...")
+
+        try:
+            model = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True, weekly_seasonality=True)
+            
+            transformer = AutoSeasonalityAndDifferences(max_season_length=season_length, max_diffs=max_diffs)
+
+            transformer.fit(train_df['y'])
+            transformed_data = transformer.transform(train_df['y'])
+            train_df['y'] = transformed_data.copy()
+
+            model.fit(train_df)
+            # Predict
+            predictions = fcst.predict(h=max_test_length)
+            test_df_copy = test_df.copy()
+            test_df_copy['forecast'] = predictions[model_name].values       
+
+            error_dict = {}
+
+            for test_length in test_lengths:
+                eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
+                # print('eval_subset', eval_subset.shape, eval_subset)
+                # raise KeyError('pashol na')
+                # Store error in the dictionary
+                error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
+
+            # Store results
+            # Merge predictions back to maintain the `ds` column
+            results.append({
+                "Model": model_name,
+                "Transforms": stringify_transform(list(transform_combination)),
+                "Lags": optimal_lags,
+                "Lag Transforms": str(lag_transforms),
+                "Lag Name": lag_name,
+                **error_dict  # Expand error dictionary into separate columns
+            })
+            print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}% with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}")
+            
+        except Exception as e:
+            print(f"Skipping combination {fit_num} due to error: {e}")
+
+        fit_num += 1
     return pd.DataFrame(results)
 
 import csv
