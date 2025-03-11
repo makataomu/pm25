@@ -419,8 +419,6 @@ import re
 import pandas as pd
 
 
-
-
 def parse_transform(transform_str):
     """
     Convert string representation back into a list of transformation objects.
