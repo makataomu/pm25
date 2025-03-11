@@ -277,13 +277,56 @@ def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms
                     fit_num += 1
     return pd.DataFrame(results)
 
+from itertools import combinations, chain
+from utilsforecast.processing import counts_by_id
 from prophet import Prophet
+from coreforecast.grouped_array import GroupedArray
+
+def dataframe_to_grouped_array(df, id_col, target_col):
+    """
+    Converts a pandas DataFrame to a GroupedArray required by mlforecast transformations.
+    """
+    id_counts = counts_by_id(df, id_col)
+    indptr = np.append(0, id_counts['counts'].cumsum())
+    return GroupedArray(df[target_col].values, indptr)
+
+def apply_transformations(ga, transformations):
+    """
+    Applies a series of transformations to a GroupedArray.
+    """
+    for transform in transformations:
+        ga = transform.fit_transform(ga)
+    return ga
+
+def inverse_transformations(ga, transformations):
+    """
+    Applies inverse transformations to a GroupedArray in reverse order.
+    """
+    for transform in reversed(transformations):
+        ga = transform.inverse_transform(ga)
+    return ga
+
+# Ensure kazakhstan_holidays is a DataFrame with 'ds' and 'holiday' columns
+kazakhstan_holidays = pd.read_csv("../data/kazakhstan_holidays.csv")
+
 def evaluate_models_prophet(train_df, test_df, target_transforms):
     """
-    Evaluates multiple models with different transformations, lag selections, and lag transformations.
-    Now accepts precomputed `optimal_lags_list` instead of calculating inside.
+    Evaluates multiple Prophet models with different configurations:
+    - Base model without additional seasonality or holidays.
+    - Model with additional seasonality.
+    - Model with holidays.
+    - Model with both additional seasonality and holidays.
+    Applies transformations to test data and inverse transforms predictions for evaluation.
     """
     results = []
+
+    # Define model configurations
+    model_configs = [
+        {"name": "prophet", "seasonality": False, "holidays": False},
+        {"name": "prophet_add_season30_5", "seasonality": True, "holidays": False},
+        {"name": "prophet_holy", "seasonality": False, "holidays": True},
+        {"name": "prophet_add_season30_5_holy", "seasonality": True, "holidays": True}
+    ]
 
     # Validate transform combinations
     valid_transform_combinations = [()] + list(chain(combinations(target_transforms, 1), combinations(target_transforms, 2)))
@@ -297,57 +340,77 @@ def evaluate_models_prophet(train_df, test_df, target_transforms):
     # Filter lengths within available test period
     test_lengths = [t for t in test_lengths if t <= max_test_length]
 
-    total_fits = len(valid_transform_combinations)
+    total_fits = len(valid_transform_combinations) * len(model_configs)
     print(f"Total model fits to run: {total_fits}")
 
     fit_num = 0
 
-    train_df = train_df[['ds', 'y']].copy()
-    test_df = test_df[['ds', 'y']].copy()
+    for config in model_configs:
+        for transform_combination in valid_transform_combinations:
+            print(f"{fit_num + 1}/{total_fits} Training {config['name']} with transforms: {stringify_transform(transform_combination)}...")
 
-    for transform_combination in valid_transform_combinations:
-        print(f"{fit_num}/{total_fits} Training...")
+            try:
+                # Convert training data to GroupedArray
+                train_ga = dataframe_to_grouped_array(train_df, 'unique_id', 'y')
 
-        try:
-            model = Prophet(seasonality_mode='multiplicative', yearly_seasonality=True, weekly_seasonality=True)
-            
-            transformer = AutoSeasonalityAndDifferences(max_season_length=season_length, max_diffs=max_diffs)
+                # Apply transformations
+                transformed_train_ga = apply_transformations(train_ga, transform_combination)
 
-            transformer.fit(train_df['y'])
-            transformed_data = transformer.transform(train_df['y'])
-            train_df['y'] = transformed_data.copy()
+                # Prepare transformed training DataFrame
+                transformed_train_df = train_df.copy()
+                transformed_train_df['y'] = transformed_train_ga.data
 
-            model.fit(train_df)
-            # Predict
-            predictions = fcst.predict(h=max_test_length)
-            test_df_copy = test_df.copy()
-            test_df_copy['forecast'] = predictions[model_name].values       
+                # Initialize the Prophet model
+                model = Prophet(
+                    seasonality_mode='multiplicative',
+                    yearly_seasonality=True,
+                    weekly_seasonality=True,
+                    holidays=kazakhstan_holidays if config['holidays'] else None
+                )
 
-            error_dict = {}
+                # Add additional seasonality if specified
+                if config['seasonality']:
+                    model.add_seasonality(name='monthly', period=30.5, fourier_order=8)
 
-            for test_length in test_lengths:
-                eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
-                # print('eval_subset', eval_subset.shape, eval_subset)
-                # raise KeyError('pashol na')
-                # Store error in the dictionary
-                error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
+                # Fit the model on transformed training data
+                model.fit(transformed_train_df[['ds', 'y']])
 
-            # Store results
-            # Merge predictions back to maintain the `ds` column
-            results.append({
-                "Model": model_name,
-                "Transforms": stringify_transform(list(transform_combination)),
-                "Lags": optimal_lags,
-                "Lag Transforms": str(lag_transforms),
-                "Lag Name": lag_name,
-                **error_dict  # Expand error dictionary into separate columns
-            })
-            print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}% with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}")
-            
-        except Exception as e:
-            print(f"Skipping combination {fit_num} due to error: {e}")
+                # Prepare a DataFrame for future dates
+                future = model.make_future_dataframe(periods=max_test_length, freq='D')
+                forecast = model.predict(future)
 
-        fit_num += 1
+                # Extract the forecasted values corresponding to the test period
+                transformed_forecast = forecast[['ds', 'yhat']].iloc[-max_test_length:].copy()
+                transformed_forecast.rename(columns={'yhat': 'y'}, inplace=True)
+                transformed_forecast['unique_id'] = test_df['unique_id'].iloc[0]  # Assuming a single series
+
+                # Convert forecast to GroupedArray
+                forecast_ga = dataframe_to_grouped_array(transformed_forecast, 'unique_id', 'y')
+
+                # Inverse transform the forecasted values
+                inverse_transformed_forecast_ga = inverse_transformations(forecast_ga, transform_combination)
+
+                # Align the inverse-transformed forecasts with the test data
+                test_df_copy = test_df.copy()
+                test_df_copy['forecast'] = inverse_transformed_forecast_ga.data
+
+                error_dict = {}
+
+                for test_length in test_lengths:
+                    eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
+                    error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values, eval_subset['forecast'].values)
+
+                # Store results
+                results.append({
+                    "Model": config['name'],
+                    "Transforms": stringify_transform(list(transform_combination)),
+                    **error_dict  # Expand error dictionary into separate columns
+                })
+                print(f"{config['name']} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}% with transforms {stringify_transform(list(transform_combination))}")
+            except Exception as e:
+                print(f"Skipping combination {fit_num + 1} due to error: {e}")
+            fit_num += 1
+
     return pd.DataFrame(results)
 
 import csv
