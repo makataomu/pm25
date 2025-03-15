@@ -1,3 +1,4 @@
 env
 venv
 catboost_info
+data/covd
