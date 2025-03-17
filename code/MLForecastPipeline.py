@@ -277,6 +277,85 @@ def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms
                     fit_num += 1
     return pd.DataFrame(results)
 
+def evaluate_models_multi(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month']):
+    """
+    Evaluates multiple models with different transformations, lag selections, and lag transformations.
+    Supports multiple unique_id values and calculates separate MAPE metrics for each.
+    """
+    results = []
+
+    # Validate transform combinations
+    valid_transform_combinations = [()] + list(chain(combinations(target_transforms, 1), combinations(target_transforms, 2)))
+    valid_transform_combinations = [tc for tc in valid_transform_combinations if filter_conflicting_transforms(tc)]
+
+    max_test_length = len(test_df)  # Full test period
+    unique_ids = test_df['unique_id'].unique()
+
+    # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
+    test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
+    test_lengths = [t for t in test_lengths if t <= max_test_length]
+
+    total_fits = len(models) * len(valid_transform_combinations) * len(optimal_lags_list) * len(lag_transforms_options)
+    print(f"Total model fits to run: {total_fits}")
+
+    fit_num = 0
+    for lag_name, optimal_lags in optimal_lags_list.items():  # Now uses precomputed lags
+        for transform_combination in valid_transform_combinations:
+            for lag_transforms in lag_transforms_options:
+                for model_name, model in models.items():
+                    print(f"{fit_num}/{total_fits} Training {model_name} with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}...")
+
+                    try:
+                        fcst = MLForecast(
+                            models=[model],
+                            freq='D',
+                            lags=optimal_lags,
+                            target_transforms=list(transform_combination),
+                            date_features=date_features,
+                            num_threads=1,
+                            lag_transforms=lag_transforms,
+                        )
+                        
+                        # Fit the model
+                        fcst.fit(train_df)
+                        
+                        # Predict
+                        predictions = fcst.predict(h=max_test_length)
+                        test_df_copy = test_df.copy()
+                        test_df_copy = test_df_copy.merge(predictions, on=['unique_id', 'ds'], how='left')
+
+                        error_dict = {}
+
+                        for unique_id in unique_ids:
+                            test_subset = test_df_copy[test_df_copy['unique_id'] == unique_id]
+                            if test_subset.empty:
+                                continue  # Skip if no test data available for this unique_id
+
+                            for test_length in test_lengths:
+                                eval_subset = test_subset.iloc[:test_length]  # Take subset for evaluation
+                                error_dict[f"{unique_id}_test_{test_length}_days"] = mape_met(eval_subset['y'].values, eval_subset[model_name].values)
+
+                        results.append({
+                            "Model": model_name,
+                            "Transforms": stringify_transform(list(transform_combination)),
+                            "Lags": optimal_lags,
+                            "Lag Transforms": str(lag_transforms),
+                            "Lag Name": lag_name,
+                            **error_dict  # Expand error dictionary into separate columns
+                        })
+                        print(f"{model_name} MAPE for last test period with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}:")
+                        for unique_id in unique_ids:
+                            metric_key = f"{unique_id}_test_{max_test_length}_days"
+                            if metric_key in error_dict:
+                                print(f"  {unique_id}: {error_dict[metric_key]:.2f}%")
+
+                    except Exception as e:
+                        print(f"Skipping combination {fit_num} due to error: {e}")
+
+                    fit_num += 1
+    return pd.DataFrame(results)
+
+
 from itertools import combinations, chain
 from utilsforecast.processing import counts_by_id
 from prophet import Prophet
