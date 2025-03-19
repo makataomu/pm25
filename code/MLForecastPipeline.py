@@ -356,7 +356,7 @@ def evaluate_models_multi(train_df, test_df, models, target_transforms, lag_tran
     return pd.DataFrame(results)
 
 from neuralforecast import NeuralForecast
-def evaluate_models(train_df, test_df, models, date_features=['dayofweek', 'month']):
+def evaluate_models_nfcst(train_df, test_df, models):
     """
     Evaluates multiple models with different transformations, lag selections, and lag transformations.
     Now accepts precomputed `optimal_lags_list` instead of calculating inside.
@@ -374,13 +374,12 @@ def evaluate_models(train_df, test_df, models, date_features=['dayofweek', 'mont
 
     fit_num = 0
     for model_name, model in models.items():
-        print(f"{fit_num}/{total_fits} Training {model_name} with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}...")
+        print(f"{fit_num}/{total_fits} Training {model_name}")
 
         try:
             fcst = NeuralForecast(
                 models=[model],
                 freq='D',
-                num_threads=1,
             )
             fcst.fit(train_df)
             
@@ -393,22 +392,15 @@ def evaluate_models(train_df, test_df, models, date_features=['dayofweek', 'mont
 
             for test_length in test_lengths:
                 eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
-                # print('eval_subset', eval_subset.shape, eval_subset)
-                # raise KeyError('pashol na')
-                # Store error in the dictionary
                 error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
 
             # Store results
             # Merge predictions back to maintain the `ds` column
             results.append({
                 "Model": model_name,
-                "Transforms": stringify_transform(list(transform_combination)),
-                "Lags": optimal_lags,
-                "Lag Transforms": str(lag_transforms),
-                "Lag Name": lag_name,
                 **error_dict  # Expand error dictionary into separate columns
             })
-            print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}% with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}")
+            print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}%")
             
         except Exception as e:
             print(f"Skipping combination {fit_num} due to error: {e}")
