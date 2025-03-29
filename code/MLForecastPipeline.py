@@ -124,7 +124,7 @@ def mape_met(y_true, y_pred):
     return np.mean(np.abs((y_true - y_pred) / (y_true + 1e-9))) * 100
 
 # Function to dynamically determine seasonal and differencing parameters
-def get_dynamic_transforms(train_df):
+def get_dynamic_transforms(train_df, remove_boxcox=False):
     max_diffs = min(len(train_df) // 2, 380)  # Avoid excessive differencing
     season_length = min(len(train_df) // 3, 365)  # Estimate reasonable seasonality
 
@@ -134,8 +134,9 @@ def get_dynamic_transforms(train_df):
         AutoSeasonalityAndDifferences(max_season_length=season_length, max_diffs=max_diffs),
         LocalStandardScaler(), 
         LocalMinMaxScaler(), 
-        LocalBoxCox()
     ]
+    if not remove_boxcox:
+        target_transforms.append(LocalBoxCox())
     return target_transforms
 
 # Function to dynamically determine max lags
@@ -156,8 +157,8 @@ def filter_conflicting_transforms(transform_combination):
         return False
     return True
 
-def return_sgdreg_name(model_name):
-    if "SGDRegressor" in model_name:
+def get_sgdreg_name(model_name):
+    if "SGDRegressor" in model_name or "SGD" in model_name:
         return "SGDRegressor"
     return model_name
 
@@ -201,8 +202,21 @@ def stringify_transform(transforms):
     
     return " | ".join(transform_strings) 
 
+
+def assign_winter_weights(df, weight_col='sample_weight'):
+    month_weights = {
+        1: 5, 2: 4, 3: 3,
+        4: 2, 5: 1, 6: 1,
+        7: 1, 8: 1, 9: 2,
+        10: 3, 11: 4, 12: 5
+    }
+    df['month'] = df['ds'].dt.month
+    df[weight_col] = df['month'].map(month_weights)
+    return df
+
+
 # Model Evaluation Pipeline
-def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month']):
+def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month'], winter_weights=False):
     """
     Evaluates multiple models with different transformations, lag selections, and lag transformations.
     Now accepts precomputed `optimal_lags_list` instead of calculating inside.
@@ -241,26 +255,26 @@ def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms
                             num_threads=1,
                             lag_transforms=lag_transforms,
                         )
-                        
-                        # Fit the model
-                        fcst.fit(train_df)
-                        
-                        # Predict
+
+                        if winter_weights:
+                            weight_col = "sample_weight"
+                            weighted_train_df = assign_winter_weights(train_df, weight_col=weight_col)
+                            fcst.fit(weighted_train_df, weight_col=weight_col, static_features=[])
+                        else:
+                            fcst.fit(train_df)
+
                         predictions = fcst.predict(h=max_test_length)
                         test_df_copy = test_df.copy()
-                        test_df_copy['forecast'] = predictions[model_name].values       
+                        print(predictions.columns)
+                        test_df_copy['forecast'] = predictions[get_sgdreg_name(model_name)].values       
 
                         error_dict = {}
-
                         for test_length in test_lengths:
                             eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
                             # print('eval_subset', eval_subset.shape, eval_subset)
                             # raise KeyError('pashol na')
-                            # Store error in the dictionary
                             error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
 
-                        # Store results
-                        # Merge predictions back to maintain the `ds` column
                         results.append({
                             "Model": model_name,
                             "Transforms": stringify_transform(list(transform_combination)),
