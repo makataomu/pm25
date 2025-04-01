@@ -214,9 +214,9 @@ def assign_winter_weights(df, weight_col='sample_weight'):
     df[weight_col] = df['month'].map(month_weights)
     return df
 
-
+from collections import defaultdict
 # Model Evaluation Pipeline
-def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month'], winter_weights=False):
+def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month'], winter_weights=False, test_by_months=False):
     """
     Evaluates multiple models with different transformations, lag selections, and lag transformations.
     Now accepts precomputed `optimal_lags_list` instead of calculating inside.
@@ -265,23 +265,33 @@ def evaluate_models(train_df, test_df, models, target_transforms, lag_transforms
 
                         predictions = fcst.predict(h=max_test_length)
                         test_df_copy = test_df.copy()
-                        print(predictions.columns)
                         test_df_copy['forecast'] = predictions[get_sgdreg_name(model_name)].values       
 
                         error_dict = {}
                         for test_length in test_lengths:
                             eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
-                            # print('eval_subset', eval_subset.shape, eval_subset)
-                            # raise KeyError('pashol na')
                             error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
 
+                        monthly_error_dict = defaultdict(dict)
+                        if test_by_months: 
+                            test_df_copy['year'] = test_df_copy['ds'].dt.year
+                            test_df_copy['month'] = test_df_copy['ds'].dt.month
+
+                            # Group by year and month and calculate MAPE for each group
+                            grouped = test_df_copy.groupby(['year', 'month'])
+                            for (year, month), group in grouped:
+                                if not group.empty:
+                                    monthly_error_dict[year][month] = mape_met(group['y'].values, group['forecast'].values)
+                        
                         results.append({
                             "Model": model_name,
                             "Transforms": stringify_transform(list(transform_combination)),
                             "Lags": optimal_lags,
                             "Lag Transforms": str(lag_transforms),
                             "Lag Name": lag_name,
-                            **error_dict  # Expand error dictionary into separate columns
+                            **error_dict,  # Expand error dictionary into separate columns
+                            **monthly_error_dict,
+                            "preds": test_df_copy['forecast'].values,
                         })
                         print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}% with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}")
                         
