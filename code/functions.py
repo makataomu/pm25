@@ -6,6 +6,25 @@ import warnings
 
 SHIFT_EPSILON = 1e-6 # Use a small epsilon to avoid issues with exact zero
 
+def rolling_zscore_outlier_removal(series, window=7, z_threshold=3.0):
+    """
+    Removes (or flags) outliers based on a rolling mean/std approach.
+    - series: pd.Series (time indexed)
+    - window: rolling window size
+    - z_threshold: threshold for z-score
+    Returns: A new Series with outliers replaced by NaN (or some other logic).
+    """
+    rolling_mean = series.rolling(window=window, center=True, min_periods=1).mean()
+    rolling_std = series.rolling(window=window, center=True, min_periods=1).std()
+    
+    z_scores = (series - rolling_mean) / rolling_std
+    outliers = z_scores.abs() > z_threshold
+    
+    # Option 1: Replace outliers with NaN
+    cleaned_series = series.mask(outliers, np.nan)
+    
+    return cleaned_series
+
 def holt_winters_imputation_and_expand(
     time_series,
     seasonal_periods,
