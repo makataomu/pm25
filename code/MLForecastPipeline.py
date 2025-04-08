@@ -347,7 +347,6 @@ def evaluate_models_multi(train_df, test_df, models, target_transforms, lag_tran
                         predictions = fcst.predict(h=max_test_length)
                         test_df_copy = test_df.copy()
                         test_df_copy = test_df_copy.merge(predictions, on=['unique_id', 'ds'], how='left')
-
                         error_dict = {}
 
                         for unique_id in unique_ids:
@@ -357,7 +356,7 @@ def evaluate_models_multi(train_df, test_df, models, target_transforms, lag_tran
 
                             for test_length in test_lengths:
                                 eval_subset = test_subset.iloc[:test_length]  # Take subset for evaluation
-                                error_dict[f"{unique_id}_test_{test_length}_days"] = mape_met(eval_subset['y'].values, eval_subset[model_name].values)
+                                error_dict[f"{unique_id}_test_{test_length}_days"] = mape_met(eval_subset['y'].values, eval_subset[get_sgdreg_name(model_name)].values)
 
                         results.append({
                             "Model": model_name,
@@ -365,7 +364,8 @@ def evaluate_models_multi(train_df, test_df, models, target_transforms, lag_tran
                             "Lags": optimal_lags,
                             "Lag Transforms": str(lag_transforms),
                             "Lag Name": lag_name,
-                            **error_dict  # Expand error dictionary into separate columns
+                            **error_dict,  # Expand error dictionary into separate columns
+                            "preds": test_df_copy[get_sgdreg_name(model_name)].values,
                         })
                         print(f"{model_name} MAPE for last test period with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}:")
                         for unique_id in unique_ids:
