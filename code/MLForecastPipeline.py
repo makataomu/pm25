@@ -379,57 +379,57 @@ def evaluate_models_multi(train_df, test_df, models, target_transforms, lag_tran
                     fit_num += 1
     return pd.DataFrame(results)
 
-from neuralforecast import NeuralForecast
-def evaluate_models_nfcst(train_df, test_df, models):
-    """
-    Evaluates multiple models with different transformations, lag selections, and lag transformations.
-    Now accepts precomputed `optimal_lags_list` instead of calculating inside.
-    """
-    results = []
+# from neuralforecast import NeuralForecast
+# def evaluate_models_nfcst(train_df, test_df, models):
+#     """
+#     Evaluates multiple models with different transformations, lag selections, and lag transformations.
+#     Now accepts precomputed `optimal_lags_list` instead of calculating inside.
+#     """
+#     results = []
 
-    max_test_length = len(test_df)  # Full test period
+#     max_test_length = len(test_df)  # Full test period
 
-    # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
-    test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
-    test_lengths = [t for t in test_lengths if t <= max_test_length]
+#     # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
+#     test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
+#     test_lengths = [t for t in test_lengths if t <= max_test_length]
 
-    total_fits = len(models) 
-    print(f"Total model fits to run: {total_fits}")
+#     total_fits = len(models) 
+#     print(f"Total model fits to run: {total_fits}")
 
-    fit_num = 0
-    for model_name, model in models.items():
-        print(f"{fit_num}/{total_fits} Training {model_name}")
+#     fit_num = 0
+#     for model_name, model in models.items():
+#         print(f"{fit_num}/{total_fits} Training {model_name}")
 
-        try:
-            fcst = NeuralForecast(
-                models=[model],
-                freq='D',
-            )
-            fcst.fit(train_df)
+#         try:
+#             fcst = NeuralForecast(
+#                 models=[model],
+#                 freq='D',
+#             )
+#             fcst.fit(train_df)
             
-            # Predict
-            predictions = fcst.predict(h=max_test_length)
-            test_df_copy = test_df.copy()
-            test_df_copy['forecast'] = predictions[model_name].values       
+#             # Predict
+#             predictions = fcst.predict(h=max_test_length)
+#             test_df_copy = test_df.copy()
+#             test_df_copy['forecast'] = predictions[model_name].values       
 
-            error_dict = {}
+#             error_dict = {}
 
-            for test_length in test_lengths:
-                eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
-                error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
+#             for test_length in test_lengths:
+#                 eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
+#                 error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
 
-            # Store results
-            # Merge predictions back to maintain the `ds` column
-            results.append({
-                "Model": model_name,
-                **error_dict  # Expand error dictionary into separate columns
-            })
-            print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}%")
+#             # Store results
+#             # Merge predictions back to maintain the `ds` column
+#             results.append({
+#                 "Model": model_name,
+#                 **error_dict  # Expand error dictionary into separate columns
+#             })
+#             print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}%")
             
-        except Exception as e:
-            print(f"Skipping combination {fit_num} due to error: {e}")
+#         except Exception as e:
+#             print(f"Skipping combination {fit_num} due to error: {e}")
 
-        fit_num += 1
+#         fit_num += 1
     return pd.DataFrame(results)
 
 
