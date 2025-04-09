@@ -34,7 +34,7 @@ def determine_max_lags(train_df, min_lags=10, max_fraction=0.5, max_limit=400):
     max_lags = min(int(len(train_df) * max_fraction), max_limit)
     return max(max_lags, min_lags)  # Ensure at least min_lags
 
-def determine_dynamic_max_lags(train_df, min_lags=15, max_fraction=0.5, max_limit=400):
+def determine_dynamic_max_lags(train_df, min_lags=15, max_fraction=0.5, max_limit=400, low_resources=False):
     """
     Dynamically determines a range of max_lags values based on train size.
     Returns a list of `max_lags` values to be tested.
@@ -44,10 +44,11 @@ def determine_dynamic_max_lags(train_df, min_lags=15, max_fraction=0.5, max_limi
     # Create diverse lag options (quarter, half, full, and extended)
     max_lags_list = [
         # max(min_lags, base_max_lags // 6),   # Small max_lags
-        max(min_lags, base_max_lags // 4),   # Small max_lags
-        max(min_lags, base_max_lags // 2),   # Medium max_lags
         base_max_lags,                      # Full max_lags
     ]
+    if not low_resources:
+        max_lags_list.append(max(min_lags, base_max_lags // 4)),   # Small max_lags
+        max_lags_list.append(max(min_lags, base_max_lags // 2)),   # Medium max_lags)
     
     # Remove duplicates and ensure sorted order
     max_lags_list = sorted(set(max_lags_list))
@@ -104,9 +105,9 @@ def select_important_lags_extended(train_df, target_col, max_lags, model=RandomF
     
     return important_lags_lists
 
-def get_optimal_lags(train_df, target_col, model=RandomForestRegressor(), ratios=[0.33, 0.66, 1]):
+def get_optimal_lags(train_df, target_col, model=RandomForestRegressor(), ratios=[0.33, 0.66, 1], low_resources=False):
     """ Selects the most important lags dynamically based on train size. """
-    max_lags_list = determine_dynamic_max_lags(train_df)  # Get dynamic max_lags
+    max_lags_list = determine_dynamic_max_lags(train_df, low_resources=low_resources)  # Get dynamic max_lags
     results = {}
 
     for max_lags in max_lags_list:
@@ -437,7 +438,7 @@ def sgd_optuna_objective(trial, train_df, test_df, transforms, lags, lag_transfo
     l1_ratio = trial.suggest_float('l1_ratio', 0.0, 1.0)
     max_iter = trial.suggest_int('max_iter', 300, 1000, step=100)  # Optimizing max_iter (number of iterations)
     eta0 = trial.suggest_float('eta0', 1e-6, 1, log=True)
-    tol = trial.suggest_loguniform('tol', 1e-6, 1e-3)
+    tol = trial.suggest_float('tol', 1e-6, 1e-3, log=True)
 
     model = SGDRegressor(alpha=alpha, l1_ratio=l1_ratio, max_iter=max_iter, eta0=eta0, tol=tol, penalty='elasticnet', random_state=42)
 
@@ -465,7 +466,7 @@ def run_optuna_search(train_df, test_df, transforms, lags, lag_transforms, n_tri
     study.optimize(lambda trial: sgd_optuna_objective(trial, train_df, test_df, transforms, lags, lag_transforms), n_trials=n_trials, n_jobs=n_jobs)
     return study.best_params
 
-def evaluate_models_sgd_tune(train_df, val_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month'], n_trials=42):
+def evaluate_models_sgd_tune(train_df, val_df, val_test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month'], n_trials=42, n_jobs=-1):
     """
     Evaluates multiple models with different transformations, lag selections, and lag transformations.
     Now accepts precomputed `optimal_lags_list` instead of calculating inside.
@@ -476,7 +477,7 @@ def evaluate_models_sgd_tune(train_df, val_df, test_df, models, target_transform
     valid_transform_combinations = [()] + list(chain(combinations(target_transforms, 1), combinations(target_transforms, 2)))
     valid_transform_combinations = [tc for tc in valid_transform_combinations if filter_conflicting_transforms(tc)]
 
-    max_test_length = len(test_df)  # Full test period
+    max_test_length = len(val_test_df)  # Full test period
 
     # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
     test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
@@ -494,9 +495,8 @@ def evaluate_models_sgd_tune(train_df, val_df, test_df, models, target_transform
                 for model_name, model in models.items():
                     print(f"{fit_num}/{total_fits} Training {model_name} with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}...")
 
-                    best_params = run_optuna_search(train_df, test_df, list(transform_combination), optimal_lags, lag_transforms, n_trials=n_trials)
-                    optuna_model = SGDRegressor(**best_params, random_state=42)
-                    models['SGD_Optuna'] = optuna_model
+                    best_params = run_optuna_search(train_df, val_df, list(transform_combination), optimal_lags, lag_transforms, n_trials=n_trials, n_jobs=n_jobs)
+                    models['SGD_Optuna'] = SGDRegressor(**best_params, random_state=42)
 
                     try:
                         fcst = MLForecast(
@@ -512,7 +512,7 @@ def evaluate_models_sgd_tune(train_df, val_df, test_df, models, target_transform
                         fcst.fit(train_df)
 
                         predictions = fcst.predict(h=max_test_length)
-                        test_df_copy = test_df.copy()
+                        test_df_copy = val_test_df.copy()
                         test_df_copy['forecast'] = predictions[get_sgdreg_name(model_name)].values       
 
                         error_dict = {}
