@@ -432,6 +432,113 @@ def evaluate_models_multi(train_df, test_df, models, target_transforms, lag_tran
 #         fit_num += 1
     return pd.DataFrame(results)
 
+def sgd_optuna_objective(trial, train_df, test_df, transforms, lags, lag_transforms):
+    alpha = trial.suggest_float('alpha', 1e-6, 1, log=True)
+    l1_ratio = trial.suggest_float('l1_ratio', 0.0, 1.0)
+    max_iter = trial.suggest_int('max_iter', 300, 1000, step=100)  # Optimizing max_iter (number of iterations)
+    eta0 = trial.suggest_float('eta0', 1e-6, 1, log=True)
+    tol = trial.suggest_loguniform('tol', 1e-6, 1e-3)
+
+    model = SGDRegressor(alpha=alpha, l1_ratio=l1_ratio, max_iter=max_iter, eta0=eta0, tol=tol, penalty='elasticnet', random_state=42)
+
+    try:
+        fcst = MLForecast(
+            models=[model],
+            freq='D',
+            lags=lags,
+            target_transforms=transforms,
+            lag_transforms=lag_transforms,
+            num_threads=1,
+        )
+        fcst.fit(train_df)
+        predictions = fcst.predict(h=len(test_df))
+        mape = mape_met(test_df['y'].values, predictions['SGDRegressor'].values)
+        return mape
+    except Exception as e:
+        print(e)
+        return float('inf')
+    
+import optuna
+
+def run_optuna_search(train_df, test_df, transforms, lags, lag_transforms, n_trials=30, n_jobs=-1):
+    study = optuna.create_study(direction='minimize')
+    study.optimize(lambda trial: sgd_optuna_objective(trial, train_df, test_df, transforms, lags, lag_transforms), n_trials=n_trials, n_jobs=n_jobs)
+    return study.best_params
+
+def evaluate_models_sgd_tune(train_df, val_df, test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month'], n_trials=42):
+    """
+    Evaluates multiple models with different transformations, lag selections, and lag transformations.
+    Now accepts precomputed `optimal_lags_list` instead of calculating inside.
+    """
+    results = []
+
+    # Validate transform combinations
+    valid_transform_combinations = [()] + list(chain(combinations(target_transforms, 1), combinations(target_transforms, 2)))
+    valid_transform_combinations = [tc for tc in valid_transform_combinations if filter_conflicting_transforms(tc)]
+
+    max_test_length = len(test_df)  # Full test period
+
+    # Define test segment lengths: 1-6 months, then 8, 10, 12, 16, 20, etc.
+    test_lengths = list(range(30, 181, 30)) + [240, 300, 360, 480, 600, 720, max_test_length]  # Days-based segmentation
+
+    # Filter lengths within available test period
+    test_lengths = [t for t in test_lengths if t <= max_test_length]
+
+    total_fits = len(models) * len(valid_transform_combinations) * len(optimal_lags_list) * len(lag_transforms_options) * n_trials
+    print(f"Total model fits to run: {total_fits}")
+
+    fit_num = 0
+    for lag_name, optimal_lags in optimal_lags_list.items():  # Now uses precomputed lags
+        for transform_combination in valid_transform_combinations:
+            for lag_transforms in lag_transforms_options:
+                for model_name, model in models.items():
+                    print(f"{fit_num}/{total_fits} Training {model_name} with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}...")
+
+                    best_params = run_optuna_search(train_df, test_df, list(transform_combination), optimal_lags, lag_transforms, n_trials=n_trials)
+                    optuna_model = SGDRegressor(**best_params, random_state=42)
+                    models['SGD_Optuna'] = optuna_model
+
+                    try:
+                        fcst = MLForecast(
+                            models=[model],
+                            freq='D',
+                            lags=optimal_lags,
+                            target_transforms=list(transform_combination),
+                            date_features=date_features,
+                            num_threads=1,
+                            lag_transforms=lag_transforms,
+                        )
+
+                        fcst.fit(train_df)
+
+                        predictions = fcst.predict(h=max_test_length)
+                        test_df_copy = test_df.copy()
+                        test_df_copy['forecast'] = predictions[get_sgdreg_name(model_name)].values       
+
+                        error_dict = {}
+                        for test_length in test_lengths:
+                            eval_subset = test_df_copy.iloc[:test_length]  # Take subset for evaluation
+                            error_dict[f"test_{test_length}_days"] = mape_met(eval_subset['y'].values,  eval_subset['forecast'].values)
+
+                        monthly_error_dict = defaultdict(dict)
+                        
+                        results.append({
+                            "Model": model_name,
+                            "Transforms": stringify_transform(list(transform_combination)),
+                            "Lags": optimal_lags,
+                            "Lag Transforms": str(lag_transforms),
+                            "Lag Name": lag_name,
+                            **error_dict,  # Expand error dictionary into separate columns
+                            **monthly_error_dict,
+                            "preds": test_df_copy['forecast'].values,
+                        })
+                        print(f"{model_name} MAPE: {error_dict[f'test_{max_test_length}_days']:.2f}% with transforms {transform_combination}, lags {optimal_lags}, and lag_transforms {lag_transforms}")
+                        
+                    except Exception as e:
+                        print(f"Skipping combination {fit_num} due to error: {e}")
+
+                    fit_num += 1
+    return pd.DataFrame(results)
 
 
 from itertools import combinations, chain
