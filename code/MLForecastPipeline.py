@@ -433,38 +433,7 @@ def evaluate_models_multi(train_df, test_df, models, target_transforms, lag_tran
 #         fit_num += 1
     return pd.DataFrame(results)
 
-def sgd_optuna_objective(trial, train_df, test_df, transforms, lags, lag_transforms):
-    alpha = trial.suggest_float('alpha', 1e-6, 1, log=True)
-    l1_ratio = trial.suggest_float('l1_ratio', 0.0, 1.0)
-    max_iter = trial.suggest_int('max_iter', 300, 1000, step=100)  # Optimizing max_iter (number of iterations)
-    eta0 = trial.suggest_float('eta0', 1e-6, 1, log=True)
-    tol = trial.suggest_float('tol', 1e-6, 1e-3, log=True)
 
-    model = SGDRegressor(alpha=alpha, l1_ratio=l1_ratio, max_iter=max_iter, eta0=eta0, tol=tol, penalty='elasticnet', random_state=42)
-
-    try:
-        fcst = MLForecast(
-            models=[model],
-            freq='D',
-            lags=lags,
-            target_transforms=transforms,
-            lag_transforms=lag_transforms,
-            num_threads=1,
-        )
-        fcst.fit(train_df)
-        predictions = fcst.predict(h=len(test_df))
-        mape = mape_met(test_df['y'].values, predictions['SGDRegressor'].values)
-        return mape
-    except Exception as e:
-        print(e)
-        return float('inf')
-    
-import optuna
-
-def run_optuna_search(train_df, test_df, transforms, lags, lag_transforms, n_trials=30, n_jobs=-1):
-    study = optuna.create_study(direction='minimize')
-    study.optimize(lambda trial: sgd_optuna_objective(trial, train_df, test_df, transforms, lags, lag_transforms), n_trials=n_trials, n_jobs=n_jobs)
-    return study.best_params
 
 def evaluate_models_sgd_tune(train_df, val_df, val_test_df, models, target_transforms, lag_transforms_options, optimal_lags_list, date_features=['dayofweek', 'month'], n_trials=42, n_jobs=-1):
     """
