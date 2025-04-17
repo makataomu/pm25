@@ -1,0 +1,71 @@
+// AGI Problem Tree
+digraph {
+	rankdir=LR
+	node1 [label="AGI Problems" shape=box]
+	node2 [label="Human ability to validate models" shape=box]
+	node1 -> node2
+	node3 [label="Too many models" shape=box]
+	node1 -> node3
+	node4 [label="Too complex (smarter or more alien)" shape=box]
+	node1 -> node4
+	node5 [label="Potential loss of control (self-improvement)" shape=box]
+	node1 -> node5
+	node6 [label=Alignment shape=box]
+	node5 -> node6
+	node7 [label="Inner misalignment" shape=box]
+	node6 -> node7
+	node8 [label=Deception shape=box]
+	node7 -> node8
+	node9 [label=Evals shape=note]
+	node8 -> node9
+	node10 [label="Scalable oversight" shape=note]
+	node8 -> node10
+	node11 [label="Red teaming" shape=note]
+	node8 -> node11
+	node12 [label=Sycophancy shape=box]
+	node7 -> node12
+	node13 [label="Scalable oversight" shape=note]
+	node12 -> node13
+	node14 [label="Mechanistic interpretability" shape=note]
+	node12 -> node14
+	node15 [label="Outer misalignment" shape=box]
+	node6 -> node15
+	node16 [label="Reward hacking" shape=box]
+	node15 -> node16
+	node17 [label="Mechanistic interpretability" shape=note]
+	node16 -> node17
+	node18 [label="Safety by design" shape=note]
+	node16 -> node18
+	node19 [label="Goal misgeneralization" shape=box]
+	node15 -> node19
+	node20 [label="Goal preservation under self-modification" shape=note]
+	node19 -> node20
+	node21 [label=Corrigibility shape=note]
+	node19 -> node21
+	node22 [label="Power-seeking behavior" shape=box]
+	node15 -> node22
+	node23 [label="Agent foundations" shape=note]
+	node22 -> node23
+	node24 [label="Red teaming" shape=note]
+	node22 -> node24
+	node25 [label="Agent behavior monitoring (not CRO)" shape=box]
+	node5 -> node25
+	node26 [label="Security/Governance" shape=box]
+	node5 -> node26
+	node27 [label="Client data and model weight security" shape=box]
+	node26 -> node27
+	node28 [label="Avoiding dangerous model races" shape=box]
+	node26 -> node28
+	node29 [label="Misuse (open-source harm)" shape=box]
+	node26 -> node29
+	node30 [label="Long-term existential risks" shape=box]
+	node5 -> node30
+	node31 [label="AI self-improvement" shape=box]
+	node30 -> node31
+	node32 [label="Turn it off" shape=note]
+	node31 -> node32
+	node33 [label="Safety by design" shape=note]
+	node31 -> node33
+	node34 [label=Corrigibility shape=note]
+	node31 -> node34
+}
