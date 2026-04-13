@@ -102,7 +102,7 @@ The project explores a wide range of forecasting models, from classical to deep 
 
 ### Deep Learning
 
-* **Seq2Seq (LSTM/GRU encoder–decoder)** — notebooks in `models_seq2seq/`
+* **Seq2Seq (LSTM/GRU encoder–decoder)** — notebooks in `code/`, name starts with {`3.5.1`,`3.5.2`,`3.5.3`,}
 * **Temporal Convolutional Networks (TCN)** — causal convolutions for long receptive fields
 * **Transformer-based** variants (as extensions)
 
